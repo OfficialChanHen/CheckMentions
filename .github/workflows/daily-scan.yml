@@ -55,6 +55,7 @@ jobs:
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          FEC_API_KEY: ${{ secrets.FEC_API_KEY }}
         run: python main.py
 
       - name: Commit report

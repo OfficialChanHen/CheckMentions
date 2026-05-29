@@ -27,6 +27,7 @@ def _candidate_block(cand: Candidate) -> str:
         "| Layer | Score | Evidence |",
         "|---|---|---|",
     ]
+    holds_note = " ✓ Trump holds" if s.get("trump_holds") else ""
     ev = {
         "gov_stake": (
             f"SEC stake-language hits: {s.get('sec_stake_hits', 0)}"
@@ -41,28 +42,55 @@ def _candidate_block(cand: Candidate) -> str:
         "positioning": (
             f"1m return {s.get('ret_1m', 0)*100:+.1f}%; volume {s.get('volume_spike', 1):.1f}×"
             f"; options flow {s.get('options_flow', 0):.2f}; insider {s.get('insider_buy', 0):.2f}"
+            + holds_note
         ),
         "exec_alignment": f"{cand.company.ceo}: {s.get('exec_praise_hits', 0)} pro-Trump headline(s)",
-        "trump_mention": f"{s.get('trump_mentions', 0)} Trump co-mentions (30d)",
+        "exec_order": f"{s.get('exec_order_hits', 0)} Executive Order(s) naming {cand.company.name} (180d)",
+        "trump_mention": f"{s.get('trump_mentions', 0)} Trump co-mentions in news (30d)",
+        "truth_social": f"{s.get('truth_social_hits', 0)} Truth Social post(s) naming {cand.company.name}",
+        "ceo_donor": (
+            f"{cand.company.ceo}: {s.get('ceo_fec_donations', 0)} FEC donation(s) to Trump committees"
+            if s.get("ceo_fec_donations") is not None
+            else f"{cand.company.ceo}: not checked (FEC key absent or pending enrichment)"
+        ),
     }
     label = {
         "gov_stake": "🏛️ Gov stake (L1)",
         "federal_revenue": "📑 Federal revenue (L2)",
         "positioning": "📈 Positioning (L3)",
         "exec_alignment": "🤝 Exec alignment (L5)",
+        "exec_order": "📜 Executive Order (L8)",
         "trump_mention": "📣 Trump mention (L4)",
+        "truth_social": "🔊 Truth Social (L6)",
+        "ceo_donor": "💰 CEO donor (L7)",
     }
-    for k in ("gov_stake", "federal_revenue", "positioning", "exec_alignment", "trump_mention"):
+    for k in ("gov_stake", "federal_revenue", "positioning", "exec_alignment",
+              "exec_order", "trump_mention", "truth_social", "ceo_donor"):
         lines.append(f"| {label[k]} | {cand.layers.get(k, 0):.2f} | {ev[k]} |")
 
     heads = s.get("headlines") or []
-    if heads:
+    ts_posts = s.get("truth_social_posts") or []
+    eos = s.get("exec_orders") or []
+    if heads or ts_posts or eos:
         lines.append("")
-        lines.append("**Recent headlines:**")
-        for h in heads[:3]:
-            title = h.get("title", "").replace("|", "·")
-            url = h.get("url", "")
-            lines.append(f"- [{title}]({url})" if url else f"- {title}")
+        if eos:
+            lines.append("**Executive Orders:**")
+            for e in eos[:2]:
+                title = e.get("title", "").replace("|", "·")
+                url = e.get("url", "")
+                lines.append(f"- [{title}]({url})" if url else f"- {title}")
+        if ts_posts:
+            lines.append("**Truth Social posts:**")
+            for p in ts_posts[:2]:
+                title = p.get("title", "").replace("|", "·")
+                url = p.get("url", "")
+                lines.append(f"- [{title}]({url})" if url else f"- {title}")
+        if heads:
+            lines.append("**Recent headlines:**")
+            for h in heads[:3]:
+                title = h.get("title", "").replace("|", "·")
+                url = h.get("url", "")
+                lines.append(f"- [{title}]({url})" if url else f"- {title}")
     lines.append("")
     return "\n".join(lines)
 
@@ -86,6 +114,8 @@ def build_report(date_str: str, ranked: List[Candidate], discoveries: List[Dict]
         + (", Polygon" if "Polygon" in active_keys else "")
         + (", Finnhub" if "Finnhub" in active_keys else "")
         + (", FMP" if "FMP" in active_keys else "")
+        + (", FEC" if "FEC" in active_keys else "")
+        + ", Truth Social RSS, Federal Register"
         + "). Verify before acting.",
         "",
         "## The checklist (in order of how early it fires)",
@@ -93,7 +123,10 @@ def build_report(date_str: str, ranked: List[Candidate], discoveries: List[Dict]
         "2. 📑 **Federal-revenue share** high and policy clearing the competition (DELL, PLTR, MU).",
         "3. 📈 **Unusual positioning** — options flow / insider buying / volume spikes with no news.",
         "4. 🤝 **Executive alignment** — the CEO publicly backs / invests alongside Trump.",
-        "5. 📣 **Trump mention** — timing confirmation, the *last* layer, not the first.",
+        "5. 📣 **Trump mention** — timing confirmation from news co-mentions.",
+        "6. 🔊 **Truth Social** — Trump directly posts about the company on his own platform.",
+        "7. 💰 **CEO donor** — FEC-verified donation from the CEO to a Trump campaign/PAC.",
+        "8. 📜 **Executive Order** — a signed EO names the company directly (Federal Register).",
         "",
         "## Top candidates",
         "",

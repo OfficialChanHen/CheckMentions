@@ -10,13 +10,16 @@ keeps the free, no-key GDELT feed as a fallback / supplement.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Dict, List
 
 from . import config, http
 
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
+TRUTH_SOCIAL_RSS = "https://truthsocial.com/@realDonaldTrump.rss"
 
 
 def _has_praise(text: str) -> bool:
@@ -113,3 +116,50 @@ def news_signal(company: config.Company) -> Dict:
             for h in headlines if h.get("title")
         ],
     }
+
+
+def truth_social_signal(company: config.Company) -> Dict:
+    """Scan @realDonaldTrump's Truth Social RSS feed for posts mentioning the company.
+
+    Returns truth_social_hits (count within the news lookback window) and a
+    small sample of matching post titles for the report.  Falls back to zeros
+    gracefully if the feed is unavailable.
+    """
+    resp = http.get(TRUTH_SOCIAL_RSS)
+    if resp is None or not resp.ok:
+        return {"truth_social_hits": 0, "truth_social_posts": []}
+
+    try:
+        root = ET.fromstring(resp.text)
+    except ET.ParseError:
+        return {"truth_social_hits": 0, "truth_social_posts": []}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=config.NEWS_LOOKBACK_DAYS)
+    # Search for company name, ticker ($TICKER cashtag), and known aliases.
+    search_terms = {company.name.lower(), f"${company.ticker.lower()}", company.ticker.lower()}
+    for alias in company.aliases:
+        search_terms.add(alias.lower())
+
+    hits = 0
+    samples: List[Dict] = []
+
+    for item in root.findall(".//item"):
+        pub_raw = item.findtext("pubDate") or ""
+        try:
+            pub_dt = parsedate_to_datetime(pub_raw) if pub_raw else None
+        except Exception:
+            pub_dt = None
+        if pub_dt is not None and pub_dt < cutoff:
+            continue
+
+        title = item.findtext("title") or ""
+        desc = item.findtext("description") or ""
+        content = (title + " " + desc).lower()
+
+        if any(term in content for term in search_terms):
+            hits += 1
+            if len(samples) < 3:
+                link = item.findtext("link") or ""
+                samples.append({"title": title, "url": link, "date": pub_raw})
+
+    return {"truth_social_hits": hits, "truth_social_posts": samples}

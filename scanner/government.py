@@ -24,6 +24,19 @@ FMP_SENATE_URL = "https://financialmodelingprep.com/api/v4/senate-trading"
 FMP_HOUSE_URL = "https://financialmodelingprep.com/api/v4/senate-disclosure"
 FMP_INSIDER_URL = "https://financialmodelingprep.com/api/v4/insider-trading"
 
+FEC_CONTRIBUTIONS_URL = "https://api.open.fec.gov/v1/schedules/schedule_a/"
+FEDERAL_REGISTER_URL = "https://www.federalregister.gov/api/v1/documents.json"
+# FEC-registered committee IDs for Trump's principal campaign and PACs.
+# C00618371 = Trump Make America Great Again Committee (joint 2016-2020)
+# C00770941 = Trump 47 Committee (2024 presidential)
+# C00828541 = Save America leadership PAC (2021-2024)
+TRUMP_COMMITTEE_IDS = ["C00618371", "C00770941", "C00828541"]
+# Inaugural committees also disclose their large donors to the FEC. Add the
+# verified FEC committee ID for the Trump-Vance Inaugural Committee here once
+# confirmed at fec.gov -- left empty deliberately rather than guessed, since a
+# wrong ID would silently return zero donations and look like a real negative.
+TRUMP_INAUGURAL_COMMITTEE_IDS: List[str] = []
+
 CONTRACT_TYPES = ["A", "B", "C", "D"]  # definitive contracts + IDV task orders
 
 
@@ -142,6 +155,70 @@ def insider_buys_fmp(ticker: str) -> int:
         if "P-Purchase" in (tx.get("transactionType") or ""):
             buys += 1
     return buys
+
+
+def ceo_fec_donations(ceo_name: str) -> int:
+    """Count FEC itemized contributions from the CEO to Trump-affiliated committees.
+
+    Uses DEMO_KEY when FEC_API_KEY is absent (40 req/hr free tier). Call this
+    only on the top FEC_TOP_N preliminary candidates to stay within rate limits.
+    """
+    api_key = config.env_key(config.KEY_FEC) or "DEMO_KEY"
+    total = 0
+    for committee_id in TRUMP_COMMITTEE_IDS + TRUMP_INAUGURAL_COMMITTEE_IDS:
+        data = http.get_json(
+            FEC_CONTRIBUTIONS_URL,
+            params={
+                "contributor_name": ceo_name,
+                "committee_id": committee_id,
+                "per_page": 5,
+                "sort": "-contribution_receipt_date",
+                "api_key": api_key,
+            },
+        )
+        if isinstance(data, dict):
+            total += int((data.get("pagination") or {}).get("count") or 0)
+        if total >= 3:
+            break
+    return total
+
+
+def trump_holds_stock(ticker: str) -> bool:
+    """True if the ticker appears in TRUMP_KNOWN_HOLDINGS (updated from OGE disclosures)."""
+    return ticker in config.TRUMP_KNOWN_HOLDINGS
+
+
+def executive_order_mentions(company: config.Company) -> Dict:
+    """Layer 8: count recent Executive Orders whose full text names the company.
+
+    An EO that names a company directly is a leading policy signal -- it tends to
+    move the valuation before the news cycle fully prices it in. Uses the free,
+    no-key Federal Register API and returns a few sample EOs for the report.
+    """
+    start = (date.today() - timedelta(days=config.EO_LOOKBACK_DAYS)).isoformat()
+    data = http.get_json(
+        FEDERAL_REGISTER_URL,
+        params={
+            "conditions[term]": f'"{company.name}"',
+            "conditions[type][]": "PRESDOCU",
+            "conditions[presidential_document_type][]": "executive_order",
+            "conditions[publication_date][gte]": start,
+            "per_page": 20,
+            "order": "newest",
+            "fields[]": ["title", "html_url", "publication_date"],
+        },
+    )
+    if not isinstance(data, dict):
+        return {"exec_order_hits": 0, "exec_orders": []}
+    count = int(data.get("count") or 0)
+    samples: List[Dict] = []
+    for r in (data.get("results") or [])[:3]:
+        samples.append({
+            "title": r.get("title") or "",
+            "url": r.get("html_url") or "",
+            "date": r.get("publication_date") or "",
+        })
+    return {"exec_order_hits": count, "exec_orders": samples}
 
 
 def discover_contract_recipients(known_aliases: List[str], limit: int = 8) -> List[Dict]:

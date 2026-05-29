@@ -48,8 +48,9 @@ def _positioning_score(s: Dict) -> float:
     ret_score = max(0.0, min(1.0, ret / 0.30))               # +30% in a month -> 1.0
     options = s.get("options_flow", 0.0)                     # already 0..1
     insider = s.get("insider_buy", 0.0)                      # already 0..1
+    holds = 1.0 if s.get("trump_holds") else 0.0             # Trump personally holds this stock
     # Options flow is the strongest positioning tell when present.
-    return min(1.0, 0.40 * options + 0.25 * insider + 0.20 * spike_score + 0.15 * ret_score)
+    return min(1.0, 0.35 * options + 0.20 * insider + 0.20 * holds + 0.15 * spike_score + 0.10 * ret_score)
 
 
 def _exec_score(s: Dict) -> float:
@@ -60,6 +61,21 @@ def _trump_score(s: Dict) -> float:
     return min(1.0, s.get("trump_mentions", 0) / 8.0)
 
 
+def _truth_social_score(s: Dict) -> float:
+    # 3 posts mentioning the company -> full score; 1 post -> 0.33
+    return min(1.0, s.get("truth_social_hits", 0) / 3.0)
+
+
+def _ceo_donor_score(s: Dict) -> float:
+    # 2+ FEC-recorded donations to Trump committees -> full score
+    return min(1.0, s.get("ceo_fec_donations", 0) / 2.0)
+
+
+def _exec_order_score(s: Dict) -> float:
+    # A single EO naming the company is already strong (0.5); 2+ maxes out.
+    return min(1.0, s.get("exec_order_hits", 0) / 2.0)
+
+
 def score_candidate(cand: Candidate) -> Candidate:
     s = cand.signals
     layers = {
@@ -67,7 +83,10 @@ def score_candidate(cand: Candidate) -> Candidate:
         "federal_revenue": _federal_score(s.get("contract_total", 0.0)),
         "positioning": _positioning_score(s),
         "exec_alignment": _exec_score(s),
+        "exec_order": _exec_order_score(s),
         "trump_mention": _trump_score(s),
+        "truth_social": _truth_social_score(s),
+        "ceo_donor": _ceo_donor_score(s),
     }
     total = sum(layers[k] * config.WEIGHTS[k] for k in config.WEIGHTS)
     cand.layers = layers
@@ -81,7 +100,10 @@ LAYER_LABELS = {
     "federal_revenue": "📑 Federal $",
     "positioning": "📈 Positioning",
     "exec_alignment": "🤝 Exec aligns",
+    "exec_order": "📜 Exec Order",
     "trump_mention": "📣 Trump mention",
+    "truth_social": "🔊 Truth Social",
+    "ceo_donor": "💰 CEO donor",
 }
 
 

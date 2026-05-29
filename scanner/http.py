@@ -24,6 +24,9 @@ _MIN_INTERVAL = {
     "api.usaspending.gov": 0.35,
     "financialmodelingprep.com": 0.35,
     "newsapi.org": 0.25,
+    "truthsocial.com": 2.0,        # be polite; no published rate limit
+    "api.open.fec.gov": 1.5,       # DEMO_KEY: 40/hr; registered key: 100k/day
+    "www.federalregister.gov": 0.5,  # generous public API; stay courteous
 }
 _DEFAULT_INTERVAL = 0.25
 

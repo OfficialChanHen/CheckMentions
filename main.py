@@ -32,6 +32,7 @@ def active_keys() -> list:
         config.KEY_POLYGON: "Polygon",
         config.KEY_FINNHUB: "Finnhub",
         config.KEY_FMP: "FMP",
+        config.KEY_FEC: "FEC",
     }
     return [label for env, label in names.items() if config.env_key(env)]
 
@@ -44,6 +45,10 @@ def gather(company: config.Company) -> Candidate:
     signals.update(government.stake_signal(company))
     # Layers 4 & 5 — news + executive alignment
     signals.update(news.news_signal(company))
+    # Layer 6 — Truth Social direct mentions
+    signals.update(news.truth_social_signal(company))
+    # Layer 8 — Executive Orders naming the company (Federal Register, no key)
+    signals.update(government.executive_order_mentions(company))
     # Layer 3 — price/volume + insider (options added later for top names)
     signals.update(market.price_volume(company.ticker))
     signals["insider_buy"] = max(
@@ -51,6 +56,10 @@ def gather(company: config.Company) -> Candidate:
         min(1.0, government.insider_buys_fmp(company.ticker) / 4.0),
     )
     signals["options_flow"] = 0.0
+    # Trump personal holdings boost the positioning layer (static list, no API call).
+    signals["trump_holds"] = government.trump_holds_stock(company.ticker)
+    # Layer 7 — CEO FEC donations: zero by default; enriched in a second pass below.
+    signals["ceo_fec_donations"] = 0
     cand = Candidate(company=company, signals=signals)
     return score_candidate(cand)
 
@@ -81,6 +90,18 @@ def main() -> int:
             except Exception as e:
                 print(f"[warn] polygon {cand.ticker}: {e}", flush=True)
         candidates.sort(key=lambda c: c.score, reverse=True)
+
+    # Enrich top candidates with FEC CEO-donation data (rate-limited; second pass).
+    # Works without a key via DEMO_KEY (40 req/hr); add FEC_API_KEY for full speed.
+    for cand in candidates[: config.FEC_TOP_N]:
+        try:
+            donations = government.ceo_fec_donations(cand.company.ceo)
+            if donations:
+                cand.signals["ceo_fec_donations"] = donations
+                score_candidate(cand)
+        except Exception as e:
+            print(f"[warn] fec {cand.ticker}: {e}", flush=True)
+    candidates.sort(key=lambda c: c.score, reverse=True)
 
     # Discovery — untracked contract recipients in target sectors.
     known_aliases = []

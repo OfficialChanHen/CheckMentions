@@ -114,21 +114,33 @@ DISCOVERY_NAICS = [
 # Weights must sum to 1.0.
 # ---------------------------------------------------------------------------
 WEIGHTS = {
-    "gov_stake": 0.30,        # Layer 1 -- strongest filter (the INTC model)
-    "federal_revenue": 0.25,  # Layer 2 -- contracts / policy (DELL, PLTR, MU)
-    "positioning": 0.20,      # Layer 3 -- options flow / insider / volume spike
-    "exec_alignment": 0.15,   # Layer 5 -- the CEO publicly backs Trump
-    "trump_mention": 0.10,    # Layer 4 -- timing confirmation only
+    "gov_stake": 0.25,        # Layer 1 -- strongest filter (the INTC model)
+    "federal_revenue": 0.20,  # Layer 2 -- contracts / policy (DELL, PLTR, MU)
+    "positioning": 0.16,      # Layer 3 -- options flow / insider / volume / holdings
+    "exec_alignment": 0.12,   # Layer 5 -- CEO publicly backs Trump in news
+    "exec_order": 0.09,       # Layer 8 -- an Executive Order names the company (leading)
+    "trump_mention": 0.07,    # Layer 4 -- news co-mention, timing confirmation
+    "truth_social": 0.07,     # Layer 6 -- Trump posts about company on Truth Social
+    "ceo_donor": 0.04,        # Layer 7 -- CEO has FEC-verified donation to Trump
 }
 
 # Lookback windows (days)
 CONTRACT_LOOKBACK_DAYS = 120
 NEWS_LOOKBACK_DAYS = 30
 INSIDER_LOOKBACK_DAYS = 90
+EO_LOOKBACK_DAYS = 180     # Executive Orders are rare and stay relevant longer
 
 # Only the strongest preliminary candidates get the rate-limited Polygon
 # options enrichment (free tier is 5 req/min).
 POLYGON_TOP_N = 15
+
+# FEC enrichment is a second-pass like Polygon -- only the top N by preliminary
+# score get checked (DEMO_KEY allows 40 req/hr; a registered key is much faster).
+FEC_TOP_N = 20
+
+# Tickers Trump personally holds per his most recent OGE financial disclosure.
+# Update manually when new disclosures are filed (annual, available at oge.gov).
+TRUMP_KNOWN_HOLDINGS: set = {"DJT"}
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +159,7 @@ PRAISE_TERMS = [
     "praise", "praises", "applaud", "thank", "thanks", "back", "backs",
     "support", "endorse", "endorses", "hails", "lauds", "ally", "dinner",
     "meeting", "pledge", "invest", "investment", "commits", "commitment",
+    "mar-a-lago", "white house",  # direct-contact tells (CEO meets Trump in person)
 ]
 
 
@@ -162,3 +175,6 @@ KEY_NEWSAPI = "NEWSAPI_KEY"
 KEY_POLYGON = "POLYGON_API_KEY"
 KEY_FINNHUB = "FINNHUB_API_KEY"
 KEY_FMP = "FMP_API_KEY"
+# FEC key is optional: falls back to DEMO_KEY (40 req/hr). Register free at
+# https://api.data.gov/signup to get 100k req/day and much faster enrichment.
+KEY_FEC = "FEC_API_KEY"
