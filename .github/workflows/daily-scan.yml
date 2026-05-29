@@ -1,0 +1,84 @@
+name: Daily Trump-Shoutout Scan
+
+# Runs every morning at 07:00 America/Los_Angeles. GitHub cron is UTC-only and
+# does not observe DST, so we fire at both 14:00 UTC (PDT) and 15:00 UTC (PST)
+# and let the guard step run the scan only when it is actually 7 AM Pacific.
+on:
+  schedule:
+    - cron: "0 14 * * *"   # 07:00 PDT (summer)
+    - cron: "0 15 * * *"   # 07:00 PST (winter)
+  workflow_dispatch:        # allow manual runs anytime
+
+permissions:
+  contents: write           # commit the daily report
+  issues: write             # open the summary issue
+
+concurrency:
+  group: daily-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard — only proceed at 07:00 Pacific (or on manual dispatch)
+        id: guard
+        run: |
+          HOUR=$(TZ=America/Los_Angeles date +%H)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$HOUR" = "07" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Pacific hour is $HOUR, not 07 — skipping this trigger."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.guard.outputs.proceed == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.guard.outputs.proceed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.guard.outputs.proceed == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Run scan
+        if: steps.guard.outputs.proceed == 'true'
+        id: scan
+        env:
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: python main.py
+
+      - name: Commit report
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --cached --quiet; then
+            echo "No report changes to commit."
+          else
+            git commit -m "report: ${{ steps.scan.outputs.date }} Trump-shoutout scan"
+            git push
+          fi
+
+      - name: Open summary issue
+        if: steps.guard.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "${{ steps.scan.outputs.issue_title }}" \
+            --body-file issue_body.md \
+            --label "daily-scan" 2>/dev/null \
+          || gh issue create \
+            --title "${{ steps.scan.outputs.issue_title }}" \
+            --body-file issue_body.md
