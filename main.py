@@ -114,11 +114,19 @@ def main() -> int:
         print(f"[warn] discovery failed: {e}", flush=True)
         discoveries = []
 
+    # Global scan: Trump positive mentions of any company (tracked or not).
+    try:
+        positive_mentions = news.trump_positive_mentions(config.UNIVERSE)
+    except Exception as e:
+        print(f"[warn] positive-mention scan failed: {e}", flush=True)
+        positive_mentions = []
+
     # Write outputs.
     os.makedirs("reports", exist_ok=True)
     report_path = f"reports/{date_str}.md"
     with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report.build_report(date_str, candidates, discoveries, keys))
+        f.write(report.build_report(date_str, candidates, discoveries, keys,
+                                    positive_mentions))
     print(f"[scan] wrote {report_path}", flush=True)
 
     issue_title = f"Trump-Shoutout Candidates — {date_str}"

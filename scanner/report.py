@@ -95,8 +95,59 @@ def _candidate_block(cand: Candidate) -> str:
     return "\n".join(lines)
 
 
+def _positive_mentions_section(mentions: List[Dict]) -> List[str]:
+    """Render the 'Positive Trump mentions' tables (tracked + untracked)."""
+    lines = [
+        "## 🎤 Positive Trump mentions (in & out of universe)",
+        "",
+        "_Recent Truth Social posts authored by @realDonaldTrump and news "
+        "headlines of the form \"Trump praises/backs/thanks X\" — split by "
+        "whether the named company is already in the tracked universe._",
+        "",
+    ]
+    if not mentions:
+        lines.append("_No positive Trump mentions surfaced this run._\n")
+        return lines
+
+    tracked = [m for m in mentions if m.get("is_tracked")]
+    untracked = [m for m in mentions if not m.get("is_tracked")]
+
+    def _row(m: Dict) -> str:
+        title = (m.get("title") or "").replace("|", "·").strip()
+        url = m.get("url") or ""
+        title_md = f"[{title}]({url})" if (title and url) else (title or "—")
+        src = "🔊 Truth Social" if m.get("source") == "truth_social" else "📰 News"
+        tkr = m.get("ticker") or ""
+        name = m.get("company_name") or ""
+        return f"| {src} | **{tkr}** | {name} | {title_md} |"
+
+    if tracked:
+        lines.append("**Tracked universe — Trump named these recently:**")
+        lines.append("")
+        lines.append("| Source | Ticker | Company | Headline / Post |")
+        lines.append("|---|---|---|---|")
+        for m in tracked[:15]:
+            lines.append(_row(m))
+        lines.append("")
+    if untracked:
+        lines.append("**Untracked — consider adding to `scanner/config.py`:**")
+        lines.append("")
+        lines.append("| Source | Cashtag / Entity | Headline / Post |")
+        lines.append("|---|---|---|")
+        for m in untracked[:15]:
+            title = (m.get("title") or "").replace("|", "·").strip()
+            url = m.get("url") or ""
+            title_md = f"[{title}]({url})" if (title and url) else (title or "—")
+            src = "🔊 Truth Social" if m.get("source") == "truth_social" else "📰 News"
+            ent = m.get("ticker") or m.get("company_name") or ""
+            lines.append(f"| {src} | **{ent}** | {title_md} |")
+        lines.append("")
+    return lines
+
+
 def build_report(date_str: str, ranked: List[Candidate], discoveries: List[Dict],
-                 active_keys: List[str]) -> str:
+                 active_keys: List[str],
+                 positive_mentions: List[Dict] | None = None) -> str:
     top = ranked[:10]
     parts = [
         f"# Trump-Shoutout Candidate Scan — {date_str}",
@@ -145,6 +196,7 @@ def build_report(date_str: str, ranked: List[Candidate], discoveries: List[Dict]
         for c in top:
             parts.append(_candidate_block(c))
 
+    parts.extend(_positive_mentions_section(positive_mentions or []))
     parts.append("## 🔭 New entrants to review")
     parts.append("")
     parts.append("_Big recent federal-contract recipients in target sectors that are **not** "

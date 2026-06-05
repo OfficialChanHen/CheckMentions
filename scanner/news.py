@@ -10,10 +10,11 @@ keeps the free, no-key GDELT feed as a fallback / supplement.
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import config, http
 
@@ -21,10 +22,105 @@ GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 TRUTH_SOCIAL_RSS = "https://truthsocial.com/@realDonaldTrump.rss"
 
+# Words that indicate a headline is *about a company*, not a person who happens
+# to share a surname with one (e.g. "Kane Parsons" the film director vs Parsons
+# the defense contractor).
+COMPANY_CONTEXT_TERMS = {
+    "stock", "stocks", "shares", "share", "ceo", "cfo", "coo",
+    "earnings", "revenue", "profit", "loss", "losses",
+    "contract", "deal", "acquisition", "merger", "ipo", "stake", "buyback",
+    "corp", "corporation", "inc", "ltd", "holdings", "company",
+    "billion", "million", "quarter", "fiscal", "guidance",
+    "investor", "investors", "analyst", "analysts", "shareholders",
+    "rally", "surge", "plunge", "jump", "drop", "soar", "tumble",
+    "upgrade", "downgrade", "target", "pricetarget",
+    "trump", "white house", "pentagon", "biden", "tariff", "tariffs",
+    "defense", "chip", "chips", "semiconductor", "fab", "factory", "plant",
+    "ai", "cloud", "data center", "server", "missile", "fighter", "drone",
+    "award", "awarded", "wins", "won", "contract",
+    "boycott", "lawsuit", "antitrust", "sec",
+}
+
+# Verbs Trump's posts/headlines use when he positively names a company.
+PRAISE_VERBS = [
+    "praises", "praised", "backs", "backed", "endorses", "endorsed",
+    "thanks", "thanked", "thanking",
+    "hails", "hailed", "lauds", "lauded",
+    "commends", "commended", "supports", "supported",
+    "celebrates", "celebrated", "applauds", "applauded",
+    "loves", "great", "fantastic",
+]
+
+# "Trump <verb> <Entity>" extractor: pulls the capitalized phrase that follows
+# a praise verb. Used to discover untracked companies Trump has praised.
+# Captures consecutive capitalized words (e.g. "Lockheed Martin"); stops at the
+# first lowercase token so trailing context like "for chip move" is dropped.
+_PRAISE_RE = re.compile(
+    r"\bTrump\s+(?:" + "|".join(re.escape(v) for v in PRAISE_VERBS) + r")\s+"
+    r"([A-Z][\w&.\-]*(?:\s+[A-Z][\w&.\-]*){0,4})"
+)
+
+_CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
+
 
 def _has_praise(text: str) -> bool:
     low = (text or "").lower()
     return any(term in low for term in config.PRAISE_TERMS)
+
+
+def _headline_about_company(title: str, company: config.Company) -> bool:
+    """Is this headline title plausibly about *this* company?
+
+    Defends against false positives like "Kane Parsons" (a film director) for
+    Parsons the defense contractor, or "Apple Martin" for Apple Inc.
+
+    Accepts the headline if any of:
+      * the ticker appears as a cashtag ($TICKER) or in parens ((TICKER));
+      * the CEO's full name appears in the title;
+      * a distinctive multi-word alias (e.g. "Parsons Corporation") appears;
+      * the canonical company name appears AND the title also carries a
+        company-context term AND the only mentions of the name are not in the
+        "[Capitalized first name] [CompanyName]" personal-name pattern.
+    """
+    if not title:
+        return False
+    title_norm = title.replace("’", "'")
+    title_low = title_norm.lower()
+
+    # Strong, unambiguous identifiers.
+    tkr = company.ticker
+    if f"${tkr.lower()}" in title_low or f"({tkr})" in title_norm:
+        return True
+    if company.ceo and company.ceo.lower() in title_low:
+        return True
+    for alias in company.aliases:
+        if len(alias) > 6 and alias.lower() in title_low:
+            return True
+
+    name_low = company.name.lower()
+    # Word-boundary match on the canonical name -- avoids "Intel" in "Intelligent".
+    name_pat = re.compile(rf"\b{re.escape(name_low)}\b")
+    name_hits = list(name_pat.finditer(title_low))
+    if not name_hits:
+        return False
+
+    # Personal-name pattern: "[Capitalized first name] [CompanyName]" where the
+    # prefix is not part of the CEO's own first name.
+    ceo_first = company.ceo.split()[0].lower() if company.ceo else ""
+    person_pat = re.compile(rf"\b([A-Z][a-z]+)\s+{re.escape(company.name)}\b")
+    person_hits = [
+        m for m in person_pat.finditer(title_norm)
+        if m.group(1).lower() != ceo_first
+    ]
+    # If *every* mention of the company name is a personal-name pattern, reject.
+    if person_hits and len(person_hits) >= len(name_hits):
+        return False
+
+    return any(term in title_low for term in COMPANY_CONTEXT_TERMS)
+
+
+def _filter_headlines(arts: List[Dict], company: config.Company) -> List[Dict]:
+    return [a for a in arts if _headline_about_company(a.get("title") or "", company)]
 
 
 def _gdelt_articles(query: str, days: int, maxrecords: int = 40) -> List[Dict]:
@@ -93,16 +189,21 @@ def news_signal(company: config.Company) -> Dict:
         ceo_articles = [a for a in articles
                         if company.ceo.split()[-1].lower() in (a.get("title") or "").lower()]
 
+    # Disambiguate: drop articles whose title isn't actually about this company
+    # (e.g. "Kane Parsons" the film director vs Parsons the defense contractor,
+    # or articles where the company name only appears in the body, not the title).
+    articles = _filter_headlines(articles, company)
+
     trump_mentions = len(articles)
 
     # Executive alignment: a headline that names the CEO *and* carries a
     # praise / backing / investment verb.
     praise_hits = 0
     praise_samples: List[Dict] = []
-    ceo_last = company.ceo.split()[-1].lower()
+    ceo_full = company.ceo.lower()
     for a in ceo_articles:
         title = a.get("title") or ""
-        if ceo_last in title.lower() and _has_praise(title):
+        if ceo_full in title.lower() and _has_praise(title):
             praise_hits += 1
             if len(praise_samples) < 3:
                 praise_samples.append(a)
@@ -135,10 +236,18 @@ def truth_social_signal(company: config.Company) -> Dict:
         return {"truth_social_hits": 0, "truth_social_posts": []}
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.NEWS_LOOKBACK_DAYS)
-    # Search for company name, ticker ($TICKER cashtag), and known aliases.
-    search_terms = {company.name.lower(), f"${company.ticker.lower()}", company.ticker.lower()}
+    # Distinctive identifiers: cashtag, ticker in parens, multi-word aliases,
+    # and the CEO's full name. Bare ticker / bare common name are checked
+    # separately with disambiguation so we don't mistake a person's surname
+    # for the company.
+    strong_terms = {f"${company.ticker.lower()}", f"({company.ticker})".lower()}
     for alias in company.aliases:
-        search_terms.add(alias.lower())
+        if len(alias) > 6:
+            strong_terms.add(alias.lower())
+    if company.ceo:
+        strong_terms.add(company.ceo.lower())
+    name_low = company.name.lower()
+    name_pat = re.compile(rf"\b{re.escape(name_low)}\b")
 
     hits = 0
     samples: List[Dict] = []
@@ -154,12 +263,171 @@ def truth_social_signal(company: config.Company) -> Dict:
 
         title = item.findtext("title") or ""
         desc = item.findtext("description") or ""
-        content = (title + " " + desc).lower()
+        content_low = (title + " " + desc).lower()
 
-        if any(term in content for term in search_terms):
+        matched = any(term in content_low for term in strong_terms)
+        if not matched and name_pat.search(content_low):
+            # Bare-name match: require this to look like a company reference,
+            # not a person who shares the name.
+            matched = _headline_about_company(title + " " + desc, company)
+        if matched:
             hits += 1
             if len(samples) < 3:
                 link = item.findtext("link") or ""
                 samples.append({"title": title, "url": link, "date": pub_raw})
 
     return {"truth_social_hits": hits, "truth_social_posts": samples}
+
+
+# ---------------------------------------------------------------------------
+# Global Trump positive-mention scan: surfaces companies (tracked OR untracked)
+# that Trump has named approvingly in a recent Truth Social post or whose
+# names appear in headlines of the form "Trump <praise verb> <Company>".
+# ---------------------------------------------------------------------------
+
+def _build_universe_index(universe: List[config.Company]) -> Dict[str, config.Company]:
+    """Map lowercase name / alias / ticker / CEO name -> Company. Lookup helper
+    for classifying free-text mentions as tracked or untracked."""
+    idx: Dict[str, config.Company] = {}
+    for c in universe:
+        idx[c.name.lower()] = c
+        idx[c.ticker.lower()] = c
+        for a in c.aliases:
+            idx[a.lower()] = c
+        if c.ceo:
+            idx[c.ceo.lower()] = c
+    return idx
+
+
+def _classify_mention(text: str, universe_idx: Dict[str, config.Company]
+                      ) -> Optional[config.Company]:
+    """Return the Company a free-text mention refers to, or None if untracked."""
+    low = text.lower().strip()
+    if not low:
+        return None
+    if low in universe_idx:
+        return universe_idx[low]
+    # Substring match against the longer keys first (e.g. "Apple Inc" beats "Apple").
+    for key in sorted(universe_idx.keys(), key=len, reverse=True):
+        if len(key) < 4:
+            continue
+        if re.search(rf"\b{re.escape(key)}\b", low):
+            return universe_idx[key]
+    return None
+
+
+def _trump_news_articles(days: int, page_size: int = 60) -> List[Dict]:
+    """Pull headlines likely to contain a Trump-says-X praise statement."""
+    newsapi_key = config.env_key(config.KEY_NEWSAPI)
+    # OR'd phrase queries work in both NewsAPI and GDELT.
+    phrases = [f'"Trump {v}"' for v in
+               ("praises", "backs", "endorses", "thanks", "hails", "lauds",
+                "commends", "celebrates", "applauds")]
+    query = " OR ".join(phrases)
+    if newsapi_key:
+        return _newsapi_articles(query, days, newsapi_key, page_size=page_size)
+    return _gdelt_articles(query, days, maxrecords=page_size)
+
+
+def trump_positive_mentions(universe: List[config.Company]) -> List[Dict]:
+    """Return Trump's recent positive mentions of *any* company (tracked or not).
+
+    Sources:
+      * @realDonaldTrump Truth Social RSS — every post is Trump-authored, so
+        cashtags ($TICKER) and company-name references are taken as positive
+        attention (Trump rarely posts about a stock he wants to slam).
+      * News headlines matching "Trump <praise verb> <Entity>" — the entity is
+        regex-extracted and matched against the universe; non-matches are
+        surfaced as untracked, which is how the next INTC gets discovered.
+
+    Each dict carries source / company / ticker / is_tracked / title / url / date
+    so the report can split into tracked vs untracked tables.
+    """
+    universe_idx = _build_universe_index(universe)
+    days = config.NEWS_LOOKBACK_DAYS
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out: List[Dict] = []
+    seen: set = set()
+
+    def _add(source: str, company: Optional[config.Company], display_name: str,
+             ticker: Optional[str], title: str, url: str, date: str) -> None:
+        key = (source, (ticker or display_name).lower(), url)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({
+            "source": source,
+            "ticker": ticker,
+            "company_name": company.name if company else display_name,
+            "is_tracked": company is not None,
+            "title": title,
+            "url": url,
+            "date": date,
+        })
+
+    # --- Truth Social ---
+    resp = http.get(TRUTH_SOCIAL_RSS)
+    if resp is not None and resp.ok:
+        try:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError:
+            root = None
+        if root is not None:
+            for item in root.findall(".//item"):
+                pub_raw = item.findtext("pubDate") or ""
+                try:
+                    pub_dt = parsedate_to_datetime(pub_raw) if pub_raw else None
+                except Exception:
+                    pub_dt = None
+                if pub_dt is not None and pub_dt < cutoff:
+                    continue
+                title = item.findtext("title") or ""
+                desc = item.findtext("description") or ""
+                link = item.findtext("link") or ""
+                content = f"{title} {desc}"
+
+                # Cashtags ($TICKER) -- unambiguous, even for untracked names.
+                for tkr in _CASHTAG_RE.findall(content):
+                    company = universe_idx.get(tkr.lower())
+                    _add("truth_social", company,
+                         company.name if company else tkr,
+                         company.ticker if company else tkr,
+                         title or desc[:140], link, pub_raw)
+
+                # Tracked company / CEO / alias mentions (word-boundary).
+                content_low = content.lower()
+                matched_tickers: set = set()
+                for key, company in universe_idx.items():
+                    if len(key) < 4 or company.ticker in matched_tickers:
+                        continue
+                    if re.search(rf"\b{re.escape(key)}\b", content_low):
+                        # Apply person-name disambiguation for ambiguous short
+                        # company names (e.g. "Parsons").
+                        if key == company.name.lower() and not _headline_about_company(content, company):
+                            continue
+                        matched_tickers.add(company.ticker)
+                        _add("truth_social", company, company.name,
+                             company.ticker, title or desc[:140], link, pub_raw)
+
+    # --- News: "Trump <praise verb> <Entity>" ---
+    try:
+        articles = _trump_news_articles(days)
+    except Exception:
+        articles = []
+
+    for a in articles:
+        title = a.get("title") or ""
+        url = a.get("url") or ""
+        date = a.get("seendate") or ""
+        if not title:
+            continue
+        for m in _PRAISE_RE.finditer(title):
+            entity = (m.group(1) or "").strip(" .,:;-")
+            if len(entity) < 2:
+                continue
+            company = _classify_mention(entity, universe_idx)
+            display = company.name if company else entity
+            ticker = company.ticker if company else None
+            _add("news", company, display, ticker, title, url, date)
+
+    return out
