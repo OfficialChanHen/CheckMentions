@@ -1,13 +1,11 @@
 name: Daily Trump-Shoutout Scan
 
-# Runs every morning at 07:00 America/Los_Angeles. GitHub cron is UTC-only and
-# does not observe DST, so we fire at both 14:00 UTC (PDT) and 15:00 UTC (PST)
-# and let the guard step run the scan only when it is actually 7 AM Pacific.
+# Daily scan ownership moved to a Claude scheduled routine
+# (https://claude.ai/code/routines) — that surface produces the analyst brief
+# alongside the scan and is visible in the Claude iOS app. This workflow stays
+# wired for manual runs (workflow_dispatch) as a fallback, with no cron.
 on:
-  schedule:
-    - cron: "0 14 * * *"   # 07:00 PDT (summer)
-    - cron: "0 15 * * *"   # 07:00 PST (winter)
-  workflow_dispatch:        # allow manual runs anytime
+  workflow_dispatch:        # manual fallback only
 
 permissions:
   contents: write           # commit the daily report
