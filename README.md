@@ -30,16 +30,38 @@ company named directly in policy.
 
 ## How it runs
 
-A GitHub Actions workflow (`.github/workflows/daily-scan.yml`) fires every
-morning at **07:00 America/Los_Angeles** (year-round, DST-aware), then:
+Two surfaces fire daily — Actions does the scan, a Claude routine does the brief.
+
+**07:00 America/Los_Angeles — GitHub Actions** (`.github/workflows/daily-scan.yml`,
+DST-aware via two UTC cron entries plus an idempotency guard):
 
 1. Scores every company in `scanner/config.py` against the checklist.
 2. Enriches the top names with Polygon options-flow and FEC CEO-donation data.
 3. Discovers big recent federal-contract recipients **not** yet tracked
    (candidate "next INTC" names to review).
 4. Commits `reports/<date>.md` to the repo **and** opens a summary GitHub Issue.
+5. Runs `scanner/news.trump_positive_mentions()` — scans @realDonaldTrump's Truth
+   Social RSS and "Trump praises X" news headlines, classifies each entity as
+   tracked-or-untracked, and renders both tables in the report.
 
-Run it manually anytime from the Actions tab (**Run workflow**).
+**07:30 America/Los_Angeles — Claude scheduled routine**
+([claude.ai/code/routines](https://claude.ai/code/routines)):
+
+6. Detects the fresh report Actions just committed and skips re-scanning.
+   (If Actions failed, the routine runs its own scan in free-sources fallback mode.)
+7. Diffs today's top 10 against the most recent prior report; flags single-layer
+   collapses as API outages, not real signal moves.
+8. Web-searches the top 3 candidates for last-48h news and notes whether news
+   corroborates or contradicts each scanner signal.
+9. Writes a **brief** (movers table + news check + data-quality flags) and an
+   **Analysis & Recommendations** section (thesis-lifecycle classification,
+   universe additions to consider, signal-calibration observations, data-quality
+   fix priority, sector watch).
+10. The brief is the routine's final chat message — visible in the Claude iOS
+    app under **Code → Routines**.
+
+Run either manually anytime: Actions tab → **Run workflow**, or
+[claude.ai/code/routines](https://claude.ai/code/routines) → **Run now**.
 
 ## Data sources
 
@@ -77,11 +99,22 @@ Edit `scanner/config.py`:
 - **`DISCOVERY_NAICS`** — sector codes used to surface new contract recipients.
 - **`TRUMP_KNOWN_HOLDINGS`** — tickers Trump personally holds (from his latest
   OGE financial disclosure); these boost the positioning layer.
+- **`COMPANY_CONTEXT_TERMS`** (in `scanner/news.py`) — words that qualify a
+  bare-name headline match as a legitimate company reference. The
+  disambiguation filter blocks "[FirstName] [CompanyName]" personal-name
+  matches (e.g. "Kane Parsons" the film director vs Parsons the contractor) —
+  extend this set if a legitimate sector term is being filtered out.
 
 Edit `scanner/government.py`:
 - **`TRUMP_COMMITTEE_IDS`** / **`TRUMP_INAUGURAL_COMMITTEE_IDS`** — FEC committee
   IDs checked for CEO donations. Add the verified inaugural-committee ID here
   once confirmed at fec.gov.
+
+Edit the Claude routine prompt:
+- The brief's Analysis & Recommendations section lives in the routine config at
+  [claude.ai/code/routines](https://claude.ai/code/routines). Update the prompt
+  to tune what gets flagged (e.g. add custom guardrails, change the lifecycle
+  taxonomy, expand sector-watch heuristics).
 
 ## Disclaimer
 
