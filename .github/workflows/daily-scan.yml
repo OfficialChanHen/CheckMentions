@@ -1,11 +1,16 @@
 name: Daily Trump-Shoutout Scan
 
-# Daily scan ownership moved to a Claude scheduled routine
-# (https://claude.ai/code/routines) — that surface produces the analyst brief
-# alongside the scan and is visible in the Claude iOS app. This workflow stays
-# wired for manual runs (workflow_dispatch) as a fallback, with no cron.
+# Actions owns the daily scan (API keys live in GH Secrets). Fires at 07:00
+# Pacific via two cron entries (14:00 UTC for PDT, 15:00 UTC for PST). A Claude
+# scheduled routine fires 30 min later (https://claude.ai/code/routines), sees
+# the fresh report, skips its own scan, and writes the analyst brief — visible
+# on the Claude iOS app. If Actions fails, the routine runs the scan in
+# free-sources mode as a fallback.
 on:
-  workflow_dispatch:        # manual fallback only
+  schedule:
+    - cron: "0 14 * * *"   # 07:00 PDT (summer)
+    - cron: "0 15 * * *"   # 07:00 PST (winter)
+  workflow_dispatch:        # manual runs anytime
 
 permissions:
   contents: write           # commit the daily report
