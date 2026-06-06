@@ -68,6 +68,29 @@ def _has_praise(text: str) -> bool:
     return any(term in low for term in config.PRAISE_TERMS)
 
 
+# Truth Social RSS is the SAME feed regardless of company. The scanner used to
+# hit it once per company in UNIVERSE (47 fetches × ~2s throttle = ~90s wasted
+# per run); a single in-process cache reuses the parsed XML across all callers.
+_TRUTH_SOCIAL_CACHE_FILLED: bool = False
+_TRUTH_SOCIAL_ROOT: Optional["ET.Element"] = None
+
+
+def _truth_social_root() -> Optional["ET.Element"]:
+    """Fetch @realDonaldTrump's RSS once per process and cache the parsed root."""
+    global _TRUTH_SOCIAL_CACHE_FILLED, _TRUTH_SOCIAL_ROOT
+    if _TRUTH_SOCIAL_CACHE_FILLED:
+        return _TRUTH_SOCIAL_ROOT
+    _TRUTH_SOCIAL_CACHE_FILLED = True
+    resp = http.get(TRUTH_SOCIAL_RSS)
+    if resp is None or not resp.ok:
+        return None
+    try:
+        _TRUTH_SOCIAL_ROOT = ET.fromstring(resp.text)
+    except ET.ParseError:
+        _TRUTH_SOCIAL_ROOT = None
+    return _TRUTH_SOCIAL_ROOT
+
+
 def _headline_about_company(title: str, company: config.Company) -> bool:
     """Is this headline title plausibly about *this* company?
 
@@ -244,13 +267,8 @@ def truth_social_signal(company: config.Company) -> Dict:
     small sample of matching post titles for the report.  Falls back to zeros
     gracefully if the feed is unavailable.
     """
-    resp = http.get(TRUTH_SOCIAL_RSS)
-    if resp is None or not resp.ok:
-        return {"truth_social_hits": 0, "truth_social_posts": []}
-
-    try:
-        root = ET.fromstring(resp.text)
-    except ET.ParseError:
+    root = _truth_social_root()
+    if root is None:
         return {"truth_social_hits": 0, "truth_social_posts": []}
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.NEWS_LOOKBACK_DAYS)
@@ -401,48 +419,43 @@ def trump_positive_mentions(universe: List[config.Company]) -> List[Dict]:
         })
 
     # --- Truth Social ---
-    resp = http.get(TRUTH_SOCIAL_RSS)
-    if resp is not None and resp.ok:
-        try:
-            root = ET.fromstring(resp.text)
-        except ET.ParseError:
-            root = None
-        if root is not None:
-            for item in root.findall(".//item"):
-                pub_raw = item.findtext("pubDate") or ""
-                try:
-                    pub_dt = parsedate_to_datetime(pub_raw) if pub_raw else None
-                except Exception:
-                    pub_dt = None
-                if pub_dt is not None and pub_dt < cutoff:
+    root = _truth_social_root()
+    if root is not None:
+        for item in root.findall(".//item"):
+            pub_raw = item.findtext("pubDate") or ""
+            try:
+                pub_dt = parsedate_to_datetime(pub_raw) if pub_raw else None
+            except Exception:
+                pub_dt = None
+            if pub_dt is not None and pub_dt < cutoff:
+                continue
+            title = item.findtext("title") or ""
+            desc = item.findtext("description") or ""
+            link = item.findtext("link") or ""
+            content = f"{title} {desc}"
+
+            # Cashtags ($TICKER) -- unambiguous, even for untracked names.
+            for tkr in _CASHTAG_RE.findall(content):
+                company = universe_idx.get(tkr.lower())
+                _add("truth_social", company,
+                     company.name if company else tkr,
+                     company.ticker if company else tkr,
+                     title or desc[:140], link, pub_raw)
+
+            # Tracked company / CEO / alias mentions (word-boundary).
+            content_low = content.lower()
+            matched_tickers: set = set()
+            for key, company in universe_idx.items():
+                if len(key) < 4 or company.ticker in matched_tickers:
                     continue
-                title = item.findtext("title") or ""
-                desc = item.findtext("description") or ""
-                link = item.findtext("link") or ""
-                content = f"{title} {desc}"
-
-                # Cashtags ($TICKER) -- unambiguous, even for untracked names.
-                for tkr in _CASHTAG_RE.findall(content):
-                    company = universe_idx.get(tkr.lower())
-                    _add("truth_social", company,
-                         company.name if company else tkr,
-                         company.ticker if company else tkr,
-                         title or desc[:140], link, pub_raw)
-
-                # Tracked company / CEO / alias mentions (word-boundary).
-                content_low = content.lower()
-                matched_tickers: set = set()
-                for key, company in universe_idx.items():
-                    if len(key) < 4 or company.ticker in matched_tickers:
+                if re.search(rf"\b{re.escape(key)}\b", content_low):
+                    # Apply person-name disambiguation for ambiguous short
+                    # company names (e.g. "Parsons").
+                    if key == company.name.lower() and not _headline_about_company(content, company):
                         continue
-                    if re.search(rf"\b{re.escape(key)}\b", content_low):
-                        # Apply person-name disambiguation for ambiguous short
-                        # company names (e.g. "Parsons").
-                        if key == company.name.lower() and not _headline_about_company(content, company):
-                            continue
-                        matched_tickers.add(company.ticker)
-                        _add("truth_social", company, company.name,
-                             company.ticker, title or desc[:140], link, pub_raw)
+                    matched_tickers.add(company.ticker)
+                    _add("truth_social", company, company.name,
+                         company.ticker, title or desc[:140], link, pub_raw)
 
     # --- News: "Trump <praise verb> <Entity>" ---
     try:
