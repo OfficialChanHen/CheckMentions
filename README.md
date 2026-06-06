@@ -93,8 +93,22 @@ python main.py
 ## Customizing
 
 Edit `scanner/config.py`:
-- **`UNIVERSE`** — add a company row (ticker, name, CEO, sector, aliases). The
-  CEO name powers the executive-alignment and CEO-donor layers, so keep it current.
+- **`UNIVERSE`** — add a company row. Fields:
+  - `ticker`, `name`, `ceo`, `sector` — required.
+  - `aliases` — extra names used for federal-contract matching.
+  - `products` — distinctive products / programs Trump may reference *without*
+    naming the company (e.g. `"Air Force One"` → BA, `"F-35"` → LMT,
+    `"Ryzen"` → AMD). Truth Social and news scans treat these as company
+    mentions. Only include strings unambiguous enough that a casual hit is
+    almost certainly about the company — skip generic words ("Windows",
+    "Patriot") to avoid false positives.
+  - `confirmed_stake` — set to `True` once the government has *actually* taken
+    or formally agreed to take an equity stake (the INTC model). When true,
+    Layer 1 fires at max regardless of SEC / congress signals — the cleanest
+    way to separate confirmed setups from speculative ones. Update by hand
+    from primary sources (press release, EO, SC 13D).
+  - The CEO name powers the executive-alignment and CEO-donor layers, so keep
+    it current.
 - **`WEIGHTS`** — re-weight the checklist layers (must sum to 1.0).
 - **`DISCOVERY_NAICS`** — sector codes used to surface new contract recipients.
 - **`TRUMP_KNOWN_HOLDINGS`** — tickers Trump personally holds (from his latest

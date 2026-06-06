@@ -139,6 +139,10 @@ def stake_signal(company: config.Company) -> Dict:
         "sec_stake_hits": min(sec_hits, 5),
         "sec_form": sec_form,
         "congress_buys": congress_buys,
+        # Hand-curated flag from scanner/config.py. When true, Layer 1 maxes
+        # out regardless of SEC / congress signals -- separates names with an
+        # actual confirmed stake (the INTC model) from those merely discussed.
+        "confirmed_stake": bool(company.confirmed_stake),
     }
 
 

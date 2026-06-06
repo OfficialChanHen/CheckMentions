@@ -20,6 +20,16 @@ class Company:
     ceo: str             # CEO full name, for the executive-alignment layer
     sector: str
     aliases: List[str] = field(default_factory=list)  # extra names for contract matching
+    # Distinctive products / programs Trump may reference *without naming the
+    # company* (e.g. "Air Force One" -> BA, "F-35" -> LMT, "Ryzen" -> AMD).
+    # Truth Social and praise-headline scans treat these as company mentions.
+    # Only include strings unambiguous enough that a casual hit is almost
+    # certainly about the company. Skip generic words ("Windows", "Patriot").
+    products: List[str] = field(default_factory=list)
+    # L1 flag: the government has *already* taken or formally agreed to take an
+    # equity stake here (the INTC model). When true, Layer 1 fires at max.
+    # Update by hand from primary sources (press releases, EOs, SC 13D filings).
+    confirmed_stake: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -29,10 +39,13 @@ class Company:
 # ---------------------------------------------------------------------------
 UNIVERSE: List[Company] = [
     # --- Semiconductors / AI silicon ---
-    Company("INTC", "Intel", "Lip-Bu Tan", "Semiconductors", ["Intel Corp", "Intel Federal"]),
-    Company("NVDA", "Nvidia", "Jensen Huang", "Semiconductors", ["Nvidia Corp"]),
+    Company("INTC", "Intel", "Lip-Bu Tan", "Semiconductors", ["Intel Corp", "Intel Federal"],
+            products=["Xeon", "Core i9"], confirmed_stake=True),
+    Company("NVDA", "Nvidia", "Jensen Huang", "Semiconductors", ["Nvidia Corp"],
+            products=["GeForce", "Blackwell", "H100", "H200"]),
     Company("MU", "Micron", "Sanjay Mehrotra", "Semiconductors", ["Micron Technology"]),
-    Company("AMD", "AMD", "Lisa Su", "Semiconductors", ["Advanced Micro Devices"]),
+    Company("AMD", "AMD", "Lisa Su", "Semiconductors", ["Advanced Micro Devices"],
+            products=["Ryzen", "EPYC", "Radeon"]),
     Company("AVGO", "Broadcom", "Hock Tan", "Semiconductors", ["Broadcom Inc"]),
     Company("QCOM", "Qualcomm", "Cristiano Amon", "Semiconductors", ["Qualcomm Inc"]),
     Company("TXN", "Texas Instruments", "Haviv Ilan", "Semiconductors", []),
@@ -46,7 +59,8 @@ UNIVERSE: List[Company] = [
     Company("ARM", "Arm Holdings", "Rene Haas", "Semiconductors", []),
 
     # --- Hardware / AI infrastructure ---
-    Company("DELL", "Dell", "Michael Dell", "AI Infrastructure", ["Dell Technologies", "Dell Federal Systems"]),
+    Company("DELL", "Dell", "Michael Dell", "AI Infrastructure",
+            ["Dell Technologies", "Dell Federal Systems"], products=["PowerEdge"]),
     Company("SMCI", "Super Micro", "Charles Liang", "AI Infrastructure", ["Super Micro Computer", "Supermicro"]),
     Company("HPE", "Hewlett Packard Enterprise", "Antonio Neri", "AI Infrastructure", ["HPE"]),
     Company("HPQ", "HP Inc", "Enrique Lores", "AI Infrastructure", ["Hewlett-Packard"]),
@@ -59,20 +73,27 @@ UNIVERSE: List[Company] = [
     # --- Federal tech / software / cloud ---
     Company("PLTR", "Palantir", "Alex Karp", "Federal Tech", ["Palantir Technologies"]),
     Company("ORCL", "Oracle", "Safra Catz", "Federal Tech", ["Oracle Corp", "Oracle America"]),
-    Company("MSFT", "Microsoft", "Satya Nadella", "Federal Tech", ["Microsoft Corp"]),
+    Company("MSFT", "Microsoft", "Satya Nadella", "Federal Tech",
+            ["Microsoft Corp"], products=["Azure", "Xbox"]),
     Company("IBM", "IBM", "Arvind Krishna", "Federal Tech", ["International Business Machines"]),
-    Company("AMZN", "Amazon", "Andy Jassy", "Federal Tech", ["Amazon Web Services", "Amazon.com"]),
+    Company("AMZN", "Amazon", "Andy Jassy", "Federal Tech",
+            ["Amazon Web Services", "Amazon.com"], products=["AWS"]),
     Company("GOOGL", "Google", "Sundar Pichai", "Federal Tech", ["Alphabet", "Google LLC"]),
     Company("CRM", "Salesforce", "Marc Benioff", "Federal Tech", []),
     Company("NOW", "ServiceNow", "Bill McDermott", "Federal Tech", []),
     Company("SNOW", "Snowflake", "Sridhar Ramaswamy", "Federal Tech", []),
 
     # --- Defense primes & services ---
-    Company("LMT", "Lockheed Martin", "Jim Taiclet", "Defense", []),
-    Company("RTX", "RTX", "Chris Calio", "Defense", ["Raytheon", "RTX Corporation"]),
-    Company("NOC", "Northrop Grumman", "Kathy Warden", "Defense", []),
-    Company("GD", "General Dynamics", "Phebe Novakovic", "Defense", []),
-    Company("BA", "Boeing", "Kelly Ortberg", "Defense", ["Boeing Company"]),
+    Company("LMT", "Lockheed Martin", "Jim Taiclet", "Defense", [],
+            products=["F-35", "F-22", "F-16", "Sikorsky Black Hawk"]),
+    Company("RTX", "RTX", "Chris Calio", "Defense", ["Raytheon", "RTX Corporation"],
+            products=["Tomahawk missile", "Stinger missile"]),
+    Company("NOC", "Northrop Grumman", "Kathy Warden", "Defense", [],
+            products=["B-21", "B-2", "Global Hawk"]),
+    Company("GD", "General Dynamics", "Phebe Novakovic", "Defense", [],
+            products=["Abrams", "Virginia-class"]),
+    Company("BA", "Boeing", "Kelly Ortberg", "Defense", ["Boeing Company"],
+            products=["Air Force One", "Dreamliner", "737 MAX"]),
     Company("LDOS", "Leidos", "Tom Bell", "Defense", ["Leidos Holdings"]),
     Company("BAH", "Booz Allen Hamilton", "Horacio Rozanski", "Defense", ["Booz Allen"]),
     Company("SAIC", "SAIC", "Toni Townes-Whitley", "Defense", ["Science Applications International"]),

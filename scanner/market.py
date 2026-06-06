@@ -18,6 +18,10 @@ from . import config, http
 
 FINNHUB_INSIDER_URL = "https://finnhub.io/api/v1/stock/insider-sentiment"
 POLYGON_OPTIONS_URL = "https://api.polygon.io/v3/snapshot/options/{ticker}"
+# Polygon's /v3/snapshot/options endpoint accepts sort = ticker | strike_price
+# | expiration_date (NOT volume). Asking for `sort=volume` silently falls back
+# to the default (ticker), which buried the high-volume contracts past the
+# limit cutoff and made options_flow read 0.00 for every name.
 
 
 def price_volume(ticker: str) -> Dict:
@@ -71,22 +75,35 @@ def options_activity_polygon(ticker: str) -> float:
     Scores 0..1 from the share of the most-active contracts showing elevated
     volume-vs-open-interest -- a classic 'fresh positioning' tell. Polygon's
     free tier is heavily rate-limited, so call this only for top candidates.
+
+    Implementation note: Polygon doesn't sort by volume server-side, so we
+    fetch the maximum chain slice (limit=250) within a near-term expiration
+    window and sort by today's volume in code before applying the vol-vs-OI
+    heuristic. A ~120-day expiration filter trims far-dated illiquid strikes.
     """
     key = config.env_key(config.KEY_POLYGON)
     if not key:
         return 0.0
+    horizon = (date.today() + timedelta(days=120)).isoformat()
     data = http.get_json(
         POLYGON_OPTIONS_URL.format(ticker=ticker),
-        params={"order": "desc", "sort": "volume", "limit": 50, "apiKey": key},
+        params={
+            "expiration_date.lte": horizon,
+            "limit": 250,
+            "apiKey": key,
+        },
     )
     if not isinstance(data, dict):
         return 0.0
     results = data.get("results") or []
     if not results:
         return 0.0
+    # Sort by today's traded volume client-side and look at the top slice.
+    results.sort(key=lambda c: float((c.get("day") or {}).get("volume") or 0), reverse=True)
+    top = results[:50]
     fresh = 0
     considered = 0
-    for c in results:
+    for c in top:
         day = c.get("day") or {}
         vol = float(day.get("volume") or 0)
         oi = float(c.get("open_interest") or 0)

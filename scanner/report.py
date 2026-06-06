@@ -30,7 +30,8 @@ def _candidate_block(cand: Candidate) -> str:
     holds_note = " ✓ Trump holds" if s.get("trump_holds") else ""
     ev = {
         "gov_stake": (
-            f"SEC stake-language hits: {s.get('sec_stake_hits', 0)}"
+            ("✓ **CONFIRMED STAKE** · " if s.get("confirmed_stake") else "")
+            + f"SEC stake-language hits: {s.get('sec_stake_hits', 0)}"
             + (f" ({s.get('sec_form')})" if s.get("sec_form") else "")
             + f"; congressional buys: {s.get('congress_buys', 0)}"
         ),
@@ -46,7 +47,10 @@ def _candidate_block(cand: Candidate) -> str:
         ),
         "exec_alignment": f"{cand.company.ceo}: {s.get('exec_praise_hits', 0)} pro-Trump headline(s)",
         "exec_order": f"{s.get('exec_order_hits', 0)} Executive Order(s) naming {cand.company.name} (180d)",
-        "trump_mention": f"{s.get('trump_mentions', 0)} Trump co-mentions in news (30d)",
+        "trump_mention": (
+            f"{s.get('trump_mentions', 0)} Trump co-mentions in news (30d) · "
+            f"{s.get('trump_mentions_7d', 0)} in last 7d"
+        ),
         "truth_social": f"{s.get('truth_social_hits', 0)} Truth Social post(s) naming {cand.company.name}",
         "ceo_donor": (
             f"{cand.company.ceo}: {s.get('ceo_fec_donations', 0)} FEC donation(s) to Trump committees"

@@ -195,6 +195,23 @@ def news_signal(company: config.Company) -> Dict:
     articles = _filter_headlines(articles, company)
 
     trump_mentions = len(articles)
+    # Dual window: the 30d count picks up the broad story; the 7d count is the
+    # momentum read (Trump mentions concentrating in the last week is the
+    # "talk it up" phase ramping). Same fetch, no marginal API cost.
+    cutoff_7d = datetime.now(timezone.utc) - timedelta(days=7)
+    trump_mentions_7d = 0
+    for a in articles:
+        raw = a.get("seendate") or ""
+        try:
+            # NewsAPI returns ISO-8601; GDELT returns YYYYMMDDTHHMMSSZ.
+            if raw.endswith("Z") and "T" in raw and "-" not in raw:
+                dt = datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            else:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt >= cutoff_7d:
+            trump_mentions_7d += 1
 
     # Executive alignment: a headline that names the CEO *and* carries a
     # praise / backing / investment verb.
@@ -211,6 +228,7 @@ def news_signal(company: config.Company) -> Dict:
     headlines = (praise_samples + articles)[:4]
     return {
         "trump_mentions": trump_mentions,
+        "trump_mentions_7d": trump_mentions_7d,
         "exec_praise_hits": praise_hits,
         "headlines": [
             {"title": h.get("title", ""), "url": h.get("url", ""), "date": h.get("seendate", "")}
@@ -237,17 +255,24 @@ def truth_social_signal(company: config.Company) -> Dict:
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.NEWS_LOOKBACK_DAYS)
     # Distinctive identifiers: cashtag, ticker in parens, multi-word aliases,
-    # and the CEO's full name. Bare ticker / bare common name are checked
-    # separately with disambiguation so we don't mistake a person's surname
-    # for the company.
+    # the CEO's full name, and distinctive products / programs (e.g. "F-35",
+    # "Ryzen", "Air Force One"). Trump frequently references a product without
+    # naming the parent company, so the products list is load-bearing here.
     strong_terms = {f"${company.ticker.lower()}", f"({company.ticker})".lower()}
     for alias in company.aliases:
         if len(alias) > 6:
             strong_terms.add(alias.lower())
     if company.ceo:
         strong_terms.add(company.ceo.lower())
+    for product in company.products:
+        if len(product) >= 3:
+            strong_terms.add(product.lower())
     name_low = company.name.lower()
     name_pat = re.compile(rf"\b{re.escape(name_low)}\b")
+    # Personal-name pattern (FirstName + CompanyName) used to reject obvious
+    # surname matches; Trump posts about people too.
+    ceo_first = company.ceo.split()[0].lower() if company.ceo else ""
+    person_pat = re.compile(rf"\b([A-Z][a-z]+)\s+{re.escape(company.name)}\b")
 
     hits = 0
     samples: List[Dict] = []
@@ -263,13 +288,23 @@ def truth_social_signal(company: config.Company) -> Dict:
 
         title = item.findtext("title") or ""
         desc = item.findtext("description") or ""
-        content_low = (title + " " + desc).lower()
+        content = title + " " + desc
+        content_low = content.lower()
 
         matched = any(term in content_low for term in strong_terms)
         if not matched and name_pat.search(content_low):
-            # Bare-name match: require this to look like a company reference,
-            # not a person who shares the name.
-            matched = _headline_about_company(title + " " + desc, company)
+            # Bare-name match on a Trump-authored post. Trump posts are short
+            # and direct; if he names the company, he means the company. Skip
+            # the heavier news-headline context requirement and only reject
+            # obvious surname patterns ("Michael Dell" without other context).
+            person_hits = [m for m in person_pat.finditer(content)
+                           if m.group(1).lower() != ceo_first]
+            name_hit_count = len(name_pat.findall(content_low))
+            if person_hits and len(person_hits) >= name_hit_count:
+                # Every mention is in a personal-name pattern -- skip.
+                pass
+            else:
+                matched = True
         if matched:
             hits += 1
             if len(samples) < 3:

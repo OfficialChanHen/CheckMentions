@@ -35,6 +35,10 @@ def _federal_score(contract_total: float) -> float:
 
 
 def _gov_stake_score(s: Dict) -> float:
+    # A confirmed stake (hand-curated in scanner/config.py) is the canonical
+    # INTC-model signal; everything else is at most strongly suggestive.
+    if s.get("confirmed_stake"):
+        return 1.0
     sec = min(1.0, s.get("sec_stake_hits", 0) / 4.0)
     congress = min(1.0, s.get("congress_buys", 0) / 3.0)
     # SEC stake language is the heavier tell; congress buys corroborate.
