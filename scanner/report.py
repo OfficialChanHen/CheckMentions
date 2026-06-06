@@ -50,6 +50,7 @@ def _candidate_block(cand: Candidate) -> str:
         "trump_mention": (
             f"{s.get('trump_mentions', 0)} Trump co-mentions in news (30d) · "
             f"{s.get('trump_mentions_7d', 0)} in last 7d"
+            + (" ⚠️ NewsAPI quota hit — under-reads" if s.get("newsapi_quota_hit") else "")
         ),
         "truth_social": f"{s.get('truth_social_hits', 0)} Truth Social post(s) naming {cand.company.name}",
         "ceo_donor": (

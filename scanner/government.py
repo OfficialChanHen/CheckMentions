@@ -200,10 +200,13 @@ def executive_order_mentions(company: config.Company) -> Dict:
     no-key Federal Register API and returns a few sample EOs for the report.
     """
     start = (date.today() - timedelta(days=config.EO_LOOKBACK_DAYS)).isoformat()
+    # Use full_text instead of term: term ranks title matches heavily and lets
+    # body-only mentions fall off the result set. The Jan 2026 NOC EO named
+    # Northrop Grumman in the body only and was being missed.
     data = http.get_json(
         FEDERAL_REGISTER_URL,
         params={
-            "conditions[term]": f'"{company.name}"',
+            "conditions[full_text]": f'"{company.name}"',
             "conditions[type][]": "PRESDOCU",
             "conditions[presidential_document_type][]": "executive_order",
             "conditions[publication_date][gte]": start,

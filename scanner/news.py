@@ -163,30 +163,78 @@ def _gdelt_articles(query: str, days: int, maxrecords: int = 40) -> List[Dict]:
     return data.get("articles", []) or []
 
 
+_NEWSAPI_QUOTA_HIT: bool = False  # set once when NewsAPI returns a quota error
+
+
 def _newsapi_articles(query: str, days: int, key: str, page_size: int = 40) -> List[Dict]:
-    frm = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-    data = http.get_json(
-        NEWSAPI_URL,
-        params={
-            "q": query,
-            "from": frm,
-            "language": "en",
-            "sortBy": "publishedAt",
-            "pageSize": page_size,
-            "apiKey": key,
-        },
-    )
-    if not isinstance(data, dict) or data.get("status") != "ok":
+    """Fetch a NewsAPI batch with explicit 429 / rate-limit handling.
+
+    NewsAPI's dev tier is 100 req/day; a single scan makes ~2x len(UNIVERSE) calls
+    so we sit close to the cap and any incidental usage tips us over. When that
+    happens NewsAPI returns either HTTP 429 *or* a 200 body with
+    `status="error", code="rateLimited" | "maximumResultsReached"`. The previous
+    silent-empty path looked identical to "no matches" -- every ticker's L4
+    layer collapsed to 0, washing the Trump-mention signal off the board.
+
+    Detect both cases, retry once on a true 429 after a 60s backoff (NewsAPI's
+    sliding window is short enough that this often succeeds), and set the
+    module-level `_NEWSAPI_QUOTA_HIT` flag so callers can surface it in
+    data-quality flags rather than treating the blackout as zero signal.
+    """
+    import time as _time
+
+    global _NEWSAPI_QUOTA_HIT
+    if _NEWSAPI_QUOTA_HIT:
+        # Don't keep hammering once we've confirmed we're over quota -- the
+        # rest of the scan would just burn time on retry/backoff.
         return []
-    out = []
-    for a in data.get("articles", []) or []:
-        out.append({
-            "title": a.get("title") or "",
-            "url": a.get("url") or "",
-            "seendate": a.get("publishedAt") or "",
-            "domain": ((a.get("source") or {}).get("name")) or "",
-        })
-    return out
+
+    frm = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    params = {
+        "q": query,
+        "from": frm,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": page_size,
+        "apiKey": key,
+    }
+    for attempt in range(2):
+        resp = http.get(NEWSAPI_URL, params=params)
+        if resp is None:
+            return []
+        if resp.status_code == 429:
+            if attempt == 0:
+                print(f"[warn] NewsAPI 429 -- backing off 60s before retry", flush=True)
+                _time.sleep(60)
+                continue
+            print(f"[warn] NewsAPI 429 persists after 60s backoff -- giving up", flush=True)
+            _NEWSAPI_QUOTA_HIT = True
+            return []
+        if not resp.ok:
+            return []
+        try:
+            data = resp.json()
+        except ValueError:
+            return []
+        if not isinstance(data, dict):
+            return []
+        if data.get("status") != "ok":
+            code = data.get("code") or ""
+            if code in ("rateLimited", "maximumResultsReached"):
+                print(f"[warn] NewsAPI quota error code={code} -- L4 layer "
+                      f"will under-read for remaining tickers", flush=True)
+                _NEWSAPI_QUOTA_HIT = True
+            return []
+        out = []
+        for a in data.get("articles", []) or []:
+            out.append({
+                "title": a.get("title") or "",
+                "url": a.get("url") or "",
+                "seendate": a.get("publishedAt") or "",
+                "domain": ((a.get("source") or {}).get("name")) or "",
+            })
+        return out
+    return []
 
 
 def news_signal(company: config.Company) -> Dict:
@@ -253,6 +301,9 @@ def news_signal(company: config.Company) -> Dict:
         "trump_mentions": trump_mentions,
         "trump_mentions_7d": trump_mentions_7d,
         "exec_praise_hits": praise_hits,
+        # True iff the NewsAPI quota was exhausted during this scan. Lets the
+        # report distinguish "no Trump mentions" from "we couldn't ask".
+        "newsapi_quota_hit": _NEWSAPI_QUOTA_HIT,
         "headlines": [
             {"title": h.get("title", ""), "url": h.get("url", ""), "date": h.get("seendate", "")}
             for h in headlines if h.get("title")
