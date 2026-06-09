@@ -136,7 +136,10 @@ def stake_signal(company: config.Company) -> Dict:
                         congress_buys += 1
 
     return {
-        "sec_stake_hits": min(sec_hits, 5),
+        # Raised cap from 5 -> 12: at 5, every 10-K boilerplate hit floored
+        # the same score as a single SC 13D, leaving no room for true-signal
+        # names to separate from background-mention names.
+        "sec_stake_hits": min(sec_hits, 12),
         "sec_form": sec_form,
         "congress_buys": congress_buys,
         # Hand-curated flag from scanner/config.py. When true, Layer 1 maxes

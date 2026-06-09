@@ -34,12 +34,28 @@ def _federal_score(contract_total: float) -> float:
     return min(1.0, math.log10(contract_total + 1) / 10.5)
 
 
+# Per-form weights for SEC stake-language hits. A single SC 13D filing is a
+# real beneficial-ownership announcement; five 10-K mentions are usually
+# routine "stakeholder" / "stake in the market" boilerplate. The L1 score
+# multiplies the raw hit count by the highest-hit form's weight so the
+# two no longer floor at the same value.
+_SEC_FORM_WEIGHTS = {
+    "SC 13D":  1.5,   # beneficial-ownership disclosure -- the real stake
+    "SC 13G":  1.4,   # passive equivalent of 13D
+    "8-K":     1.0,   # material-event filing (often a stake announcement)
+    "10-K":    0.4,   # annual report -- mostly boilerplate
+    "10-Q":    0.4,   # quarterly -- same
+}
+
+
 def _gov_stake_score(s: Dict) -> float:
     # A confirmed stake (hand-curated in scanner/config.py) is the canonical
     # INTC-model signal; everything else is at most strongly suggestive.
     if s.get("confirmed_stake"):
         return 1.0
-    sec = min(1.0, s.get("sec_stake_hits", 0) / 4.0)
+    form = s.get("sec_form", "")
+    mult = _SEC_FORM_WEIGHTS.get(form, 0.6)  # unknown form -> mid weight
+    sec = min(1.0, s.get("sec_stake_hits", 0) * mult / 4.0)
     congress = min(1.0, s.get("congress_buys", 0) / 3.0)
     # SEC stake language is the heavier tell; congress buys corroborate.
     return min(1.0, 0.65 * sec + 0.45 * congress)

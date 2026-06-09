@@ -71,24 +71,40 @@ def _has_praise(text: str) -> bool:
 # Truth Social RSS is the SAME feed regardless of company. The scanner used to
 # hit it once per company in UNIVERSE (47 fetches × ~2s throttle = ~90s wasted
 # per run); a single in-process cache reuses the parsed XML across all callers.
+# A failed fetch is now distinguished from a successful-but-empty fetch via
+# the FEED_FAILED flag so the report can surface "feed unavailable" instead
+# of looking identical to "Trump didn't mention any of these companies".
 _TRUTH_SOCIAL_CACHE_FILLED: bool = False
 _TRUTH_SOCIAL_ROOT: Optional["ET.Element"] = None
+_TRUTH_SOCIAL_FEED_FAILED: bool = False
 
 
 def _truth_social_root() -> Optional["ET.Element"]:
-    """Fetch @realDonaldTrump's RSS once per process and cache the parsed root."""
-    global _TRUTH_SOCIAL_CACHE_FILLED, _TRUTH_SOCIAL_ROOT
+    """Fetch @realDonaldTrump's RSS once per process, with brief retries, and
+    cache the parsed root. truthsocial.com is occasionally flaky -- 3 attempts
+    with backoff turns the typical transient hiccup into a no-op instead of
+    poisoning the run."""
+    global _TRUTH_SOCIAL_CACHE_FILLED, _TRUTH_SOCIAL_ROOT, _TRUTH_SOCIAL_FEED_FAILED
     if _TRUTH_SOCIAL_CACHE_FILLED:
         return _TRUTH_SOCIAL_ROOT
     _TRUTH_SOCIAL_CACHE_FILLED = True
-    resp = http.get(TRUTH_SOCIAL_RSS)
-    if resp is None or not resp.ok:
-        return None
-    try:
-        _TRUTH_SOCIAL_ROOT = ET.fromstring(resp.text)
-    except ET.ParseError:
-        _TRUTH_SOCIAL_ROOT = None
-    return _TRUTH_SOCIAL_ROOT
+    import time as _time
+    backoffs = (0.0, 1.0, 3.0)  # immediate, then 1s, then 3s
+    for attempt, wait in enumerate(backoffs):
+        if wait:
+            _time.sleep(wait)
+        resp = http.get(TRUTH_SOCIAL_RSS)
+        if resp is None or not resp.ok:
+            continue
+        try:
+            _TRUTH_SOCIAL_ROOT = ET.fromstring(resp.text)
+            return _TRUTH_SOCIAL_ROOT
+        except ET.ParseError:
+            continue
+    # All retries failed -- mark as unavailable so the report can flag it.
+    _TRUTH_SOCIAL_FEED_FAILED = True
+    print("[warn] Truth Social RSS unreachable after 3 attempts -- L6 will read 0 across the universe", flush=True)
+    return None
 
 
 def _headline_about_company(title: str, company: config.Company) -> bool:
@@ -164,6 +180,42 @@ def _gdelt_articles(query: str, days: int, maxrecords: int = 40) -> List[Dict]:
 
 
 _NEWSAPI_QUOTA_HIT: bool = False  # set once when NewsAPI returns a quota error
+# Whole-run override: when True, every news_signal / _trump_news_articles call
+# uses GDELT regardless of whether a NewsAPI key is present. main.py flips this
+# on at scan start when the pre-flight probe fails, and again mid-run if quota
+# burns -- ensuring every ticker in the run uses the same source (otherwise
+# tickers 1..N would have NewsAPI's coverage shape and N+1..47 would have
+# GDELT's, breaking cross-ticker rank comparability).
+_GDELT_ONLY: bool = False
+
+
+def _newsapi_healthy(key: str) -> bool:
+    """Pre-flight probe: one cheap NewsAPI call to check that the quota isn't
+    already exhausted before we commit the run to NewsAPI mode.
+
+    Returns False if the probe returns 429, a JSON 'rateLimited' status, or
+    a parse error. True only on a clean status='ok' response.
+    """
+    if not key:
+        return False
+    resp = http.get(NEWSAPI_URL, params={"q": "test", "pageSize": 1, "apiKey": key})
+    if resp is None or resp.status_code == 429 or not resp.ok:
+        return False
+    try:
+        data = resp.json()
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("status") == "ok"
+
+
+def force_gdelt_mode(reason: str = "") -> None:
+    """Switch the rest of the run to GDELT for every news fetch. Called by
+    main.py when the NewsAPI pre-flight fails OR when quota burns mid-run."""
+    global _GDELT_ONLY
+    if not _GDELT_ONLY:
+        _GDELT_ONLY = True
+        if reason:
+            print(f"[info] news source: GDELT-only for the rest of the run ({reason})", flush=True)
 
 
 def _newsapi_articles(query: str, days: int, key: str, page_size: int = 40) -> List[Dict]:
@@ -248,7 +300,12 @@ def news_signal(company: config.Company) -> Dict:
 
     # One combined co-mention query: articles about Trump that also name the
     # company or its CEO. Phrase-quoted to avoid generic matches.
-    if newsapi_key:
+    #
+    # Source-routing: NewsAPI when (a) key present, (b) not in forced GDELT
+    # mode, (c) quota hasn't burned. Otherwise GDELT. main.py orchestrates a
+    # mid-run restart if quota burns so every ticker uses one source.
+    use_newsapi = bool(newsapi_key) and not _GDELT_ONLY and not _NEWSAPI_QUOTA_HIT
+    if use_newsapi:
         query = f'"{company.name}" AND Trump'
         articles = _newsapi_articles(query, days, newsapi_key)
         # CEO-focused pass for the alignment layer.
@@ -320,7 +377,11 @@ def truth_social_signal(company: config.Company) -> Dict:
     """
     root = _truth_social_root()
     if root is None:
-        return {"truth_social_hits": 0, "truth_social_posts": []}
+        return {
+            "truth_social_hits": 0,
+            "truth_social_posts": [],
+            "truth_social_feed_failed": _TRUTH_SOCIAL_FEED_FAILED,
+        }
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.NEWS_LOOKBACK_DAYS)
     # Distinctive identifiers: cashtag, ticker in parens, multi-word aliases,
@@ -380,7 +441,11 @@ def truth_social_signal(company: config.Company) -> Dict:
                 link = item.findtext("link") or ""
                 samples.append({"title": title, "url": link, "date": pub_raw})
 
-    return {"truth_social_hits": hits, "truth_social_posts": samples}
+    return {
+        "truth_social_hits": hits,
+        "truth_social_posts": samples,
+        "truth_social_feed_failed": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +493,10 @@ def _trump_news_articles(days: int, page_size: int = 60) -> List[Dict]:
                ("praises", "backs", "endorses", "thanks", "hails", "lauds",
                 "commends", "celebrates", "applauds")]
     query = " OR ".join(phrases)
-    if newsapi_key:
+    # Same source-routing as news_signal: NewsAPI when key is present, mode
+    # is normal, and quota hasn't burned -- otherwise GDELT for consistency
+    # with the per-ticker pass.
+    if newsapi_key and not _GDELT_ONLY and not _NEWSAPI_QUOTA_HIT:
         return _newsapi_articles(query, days, newsapi_key, page_size=page_size)
     return _gdelt_articles(query, days, maxrecords=page_size)
 

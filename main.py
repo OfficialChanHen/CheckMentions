@@ -62,11 +62,35 @@ def gather(company: config.Company) -> Candidate:
     return score_candidate(cand)
 
 
+def _refresh_news_signals(candidates: list) -> None:
+    """Re-run news_signal for every gathered candidate. Called when NewsAPI
+    quota burns mid-run; after this returns, every candidate's L4/L5 numbers
+    come from the same source (GDELT) instead of a mix of NewsAPI and GDELT.
+    """
+    print(f"[scan] re-running L4/L5 via GDELT for {len(candidates)} candidates",
+          flush=True)
+    for cand in candidates:
+        try:
+            cand.signals.update(news.news_signal(cand.company))
+            score_candidate(cand)
+        except Exception as e:
+            print(f"[warn] gdelt refresh {cand.ticker}: {e}", flush=True)
+
+
 def main() -> int:
     today_pt = datetime.now(PACIFIC)
     date_str = today_pt.strftime("%Y-%m-%d")
     keys = active_keys()
     print(f"[scan] {date_str} — active keys: {keys or 'none (free sources only)'}", flush=True)
+
+    # Pre-flight NewsAPI quota probe. If quota is already burned at scan
+    # start, switch the whole run to GDELT so every ticker uses the same
+    # source -- otherwise mid-run quota burnout would mix NewsAPI's coverage
+    # shape (tickers 1..N) with GDELT's (N+1..47), breaking cross-ticker
+    # rank comparability.
+    newsapi_key = config.env_key(config.KEY_NEWSAPI)
+    if newsapi_key and not news._newsapi_healthy(newsapi_key):
+        news.force_gdelt_mode("pre-flight probe failed -- quota already at 0")
 
     candidates = []
     for i, company in enumerate(config.UNIVERSE, 1):
@@ -75,15 +99,24 @@ def main() -> int:
             candidates.append(gather(company))
         except Exception as e:  # never let one name kill the run
             print(f"[warn] {company.ticker} failed: {e}", flush=True)
+        # Mid-run quota detection. If _NEWSAPI_QUOTA_HIT just flipped, switch
+        # to GDELT mode and re-fetch the already-gathered candidates' L4/L5
+        # via GDELT so the whole run has consistent news-source coverage.
+        if news._NEWSAPI_QUOTA_HIT and not news._GDELT_ONLY:
+            news.force_gdelt_mode(f"quota burned at ticker {i}/{len(config.UNIVERSE)}")
+            _refresh_news_signals(candidates)
 
     # Enrich the strongest preliminary candidates with Polygon options flow.
     candidates.sort(key=lambda c: c.score, reverse=True)
     if config.env_key(config.KEY_POLYGON):
         for cand in candidates[: config.POLYGON_TOP_N]:
             try:
-                flow = market.options_activity_polygon(cand.ticker)
-                if flow:
-                    cand.signals["options_flow"] = flow
+                poly = market.options_activity_polygon(cand.ticker)
+                # options_activity_polygon returns options_flow + a stale-data
+                # flag the report uses to surface "Polygon EOD lag" instead of
+                # silently scoring everyone at 0.
+                cand.signals.update(poly)
+                if poly.get("options_flow"):
                     score_candidate(cand)
             except Exception as e:
                 print(f"[warn] polygon {cand.ticker}: {e}", flush=True)

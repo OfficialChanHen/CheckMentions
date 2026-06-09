@@ -42,7 +42,10 @@ def _candidate_block(cand: Candidate) -> str:
         ),
         "positioning": (
             f"1m return {s.get('ret_1m', 0)*100:+.1f}%; volume {s.get('volume_spike', 1):.1f}×"
-            f"; options flow {s.get('options_flow', 0):.2f}; insider {s.get('insider_buy', 0):.2f}"
+            f"; options flow {s.get('options_flow', 0):.2f}"
+            + (" ⚠️ Polygon EOD not yet propagated (OI-concentration fallback)"
+               if s.get("polygon_data_stale") else "")
+            + f"; insider {s.get('insider_buy', 0):.2f}"
             + holds_note
         ),
         "exec_alignment": f"{cand.company.ceo}: {s.get('exec_praise_hits', 0)} pro-Trump headline(s)",
@@ -52,7 +55,11 @@ def _candidate_block(cand: Candidate) -> str:
             f"{s.get('trump_mentions_7d', 0)} in last 7d"
             + (" ⚠️ NewsAPI quota hit — under-reads" if s.get("newsapi_quota_hit") else "")
         ),
-        "truth_social": f"{s.get('truth_social_hits', 0)} Truth Social post(s) naming {cand.company.name}",
+        "truth_social": (
+            f"{s.get('truth_social_hits', 0)} Truth Social post(s) naming {cand.company.name}"
+            + (" ⚠️ Truth Social feed unavailable — all retries failed"
+               if s.get("truth_social_feed_failed") else "")
+        ),
         "ceo_donor": (
             f"{cand.company.ceo}: {s.get('ceo_fec_donations', 0)} FEC donation(s) to Trump committees"
             if s.get("ceo_fec_donations") is not None
@@ -216,7 +223,17 @@ def build_report(date_str: str, ranked: List[Candidate], discoveries: List[Dict]
         parts.append("_None surfaced this run._")
     parts.append("")
     parts.append("---")
-    parts.append(f"_Active data keys this run: {', '.join(active_keys) if active_keys else 'free sources only'}._")
+    # If the news source had to switch to GDELT mid-run (NewsAPI quota burnout
+    # or pre-flight failure), surface that here so the reader knows L4/L5
+    # came from GDELT for the whole run, not a NewsAPI/GDELT mix.
+    from . import news as _news
+    if "NewsAPI" in active_keys and _news._GDELT_ONLY:
+        news_source_note = " (NewsAPI quota exhausted — run used GDELT for L4/L5)"
+    else:
+        news_source_note = ""
+    parts.append(f"_Active data keys this run: "
+                 f"{', '.join(active_keys) if active_keys else 'free sources only'}"
+                 f"{news_source_note}._")
     parts.append("")
     return "\n".join(parts)
 

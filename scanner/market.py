@@ -70,21 +70,29 @@ def insider_sentiment_finnhub(ticker: str) -> float:
     return max(0.0, min(1.0, (avg_mspr + 100) / 200))
 
 
-def options_activity_polygon(ticker: str) -> float:
+def options_activity_polygon(ticker: str) -> Dict:
     """Unusual-options proxy from Polygon's options snapshot (free key).
 
-    Scores 0..1 from the share of the most-active contracts showing elevated
-    volume-vs-open-interest -- a classic 'fresh positioning' tell. Polygon's
-    free tier is heavily rate-limited, so call this only for top candidates.
+    Returns {"options_flow": float 0..1, "polygon_data_stale": bool}. The
+    `polygon_data_stale` flag is set when today's volume data hasn't
+    propagated to the free tier yet (typical at 5 AM PT scan time), in which
+    case the score falls back to an open-interest concentration proxy rather
+    than reading 0 and looking identical to "no unusual positioning".
 
-    Implementation note: Polygon doesn't sort by volume server-side, so we
-    fetch the maximum chain slice (limit=250) within a near-term expiration
-    window and sort by today's volume in code before applying the vol-vs-OI
-    heuristic. A ~120-day expiration filter trims far-dated illiquid strikes.
+    Two scoring paths:
+      * Live data path (`day.volume > 0` on at least one contract): the
+        classic vol-vs-OI heuristic -- fresh contracts opened today, not
+        held -- gives a precise positioning read.
+      * OI-fallback path (`day.volume == 0` across the whole response):
+        rank by `open_interest`, score by the concentration of the top-20
+        contracts' OI as a share of the whole chain's OI. Concentration in
+        a few strikes is a classic positioning tell even without today's
+        volume data; the data_stale flag fires so the report tells the
+        user the scoring path degraded.
     """
     key = config.env_key(config.KEY_POLYGON)
     if not key:
-        return 0.0
+        return {"options_flow": 0.0, "polygon_data_stale": False}
     horizon = (config.today_pacific() + timedelta(days=120)).isoformat()
     data = http.get_json(
         POLYGON_OPTIONS_URL.format(ticker=ticker),
@@ -95,11 +103,12 @@ def options_activity_polygon(ticker: str) -> float:
         },
     )
     if not isinstance(data, dict):
-        return 0.0
+        return {"options_flow": 0.0, "polygon_data_stale": False}
     results = data.get("results") or []
     if not results:
-        return 0.0
-    # Sort by today's traded volume client-side and look at the top slice.
+        return {"options_flow": 0.0, "polygon_data_stale": False}
+
+    # Live data path: sort by today's volume and apply vol-vs-OI heuristic.
     results.sort(key=lambda c: float((c.get("day") or {}).get("volume") or 0), reverse=True)
     top = results[:50]
     fresh = 0
@@ -116,6 +125,28 @@ def options_activity_polygon(ticker: str) -> float:
             fresh += 1
         elif oi == 0 and vol > 100:
             fresh += 1
-    if considered == 0:
-        return 0.0
-    return min(1.0, fresh / considered)
+
+    if considered > 0:
+        return {
+            "options_flow": min(1.0, fresh / considered),
+            "polygon_data_stale": False,
+        }
+
+    # Fallback path: every contract had volume = 0 (free-tier EOD lag or
+    # pre-market). Rank by open_interest and use top-20 OI concentration
+    # as the positioning proxy.
+    results.sort(key=lambda c: float(c.get("open_interest") or 0), reverse=True)
+    total_oi = sum(float(c.get("open_interest") or 0) for c in results)
+    if total_oi <= 0:
+        return {"options_flow": 0.0, "polygon_data_stale": True}
+    top20_oi = sum(float(c.get("open_interest") or 0) for c in results[:20])
+    # Concentration of the top-20 in the whole chain. A diversified chain
+    # (every strike has roughly equal OI) scores low; a chain where one
+    # strike dwarfs the rest scores high.
+    concentration = top20_oi / total_oi
+    # Map [0..1] concentration onto [0..1] score with a small floor so a
+    # totally-flat chain reads as 0 rather than negative.
+    return {
+        "options_flow": max(0.0, min(1.0, (concentration - 0.2) / 0.6)),
+        "polygon_data_stale": True,
+    }
