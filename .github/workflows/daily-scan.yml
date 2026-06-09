@@ -1,15 +1,17 @@
 name: Daily Trump-Shoutout Scan
 
-# Actions owns the daily scan (API keys live in GH Secrets). Fires at 07:00
-# Pacific via two cron entries (14:00 UTC for PDT, 15:00 UTC for PST). A Claude
-# scheduled routine fires 30 min later (https://claude.ai/code/routines), sees
-# the fresh report, skips its own scan, and writes the analyst brief — visible
-# on the Claude iOS app. If Actions fails, the routine runs the scan in
-# free-sources mode as a fallback.
+# Actions owns the daily scan (API keys live in GH Secrets). Fires at 05:00
+# America/Los_Angeles year-round via IANA-tz-aware cron (DST handled
+# automatically by GH Actions, March 2026 feature). The 2.5-hour gap before
+# the Claude routine at 14:30 UTC / 07:30 PDT absorbs Actions cron drift
+# (routinely 30-90 min on heavily-used schedules) so the routine never races
+# the scan. The routine sees the fresh report, skips its own scan, and writes
+# the analyst brief -- visible on the Claude iOS app. If Actions fails
+# entirely, the routine runs the scan itself in free-sources fallback mode.
 on:
   schedule:
-    - cron: "0 14 * * *"   # 07:00 PDT (summer)
-    - cron: "0 15 * * *"   # 07:00 PST (winter)
+    - cron: "0 5 * * *"
+      timezone: "America/Los_Angeles"
   workflow_dispatch:        # manual runs anytime
 
 permissions:
@@ -32,16 +34,15 @@ jobs:
         run: |
           HOUR=$(TZ=America/Los_Angeles date +%H)
           DATE=$(TZ=America/Los_Angeles date +%Y-%m-%d)
-          # Manual dispatch always proceeds. Scheduled runs proceed only after
-          # 07:00 Pacific AND only if today's report hasn't been committed yet.
-          # GitHub Actions cron is UTC-only and can be delayed by 30-60+ min;
-          # an exact hour==07 guard silently drops those late firings, so we
-          # use ">= 7" plus an idempotency check on the report file instead.
+          # Manual dispatch always proceeds. Scheduled cron is tz-aware (5 AM
+          # Pacific), so the hour check just protects against off-hour manual
+          # mis-fires; idempotency is enforced by checking the report file so
+          # late-fired duplicates and re-runs both skip cleanly.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "Manual dispatch — proceeding."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
-          elif [ "$HOUR" -lt 7 ]; then
-            echo "Pacific hour is $HOUR (< 7) — skipping this trigger."
+          elif [ "$HOUR" -lt 5 ]; then
+            echo "Pacific hour is $HOUR (< 5) — skipping this trigger."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           elif [ -f "reports/$DATE.md" ]; then
             echo "reports/$DATE.md already exists — skipping (idempotent)."
