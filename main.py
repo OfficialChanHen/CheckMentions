@@ -18,12 +18,10 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from scanner import config, government, market, news, report
+from scanner.config import PACIFIC
 from scanner.scoring import Candidate, score_candidate
-
-PACIFIC = ZoneInfo("America/Los_Angeles")
 
 
 def active_keys() -> list:

@@ -10,7 +10,22 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+# Project-wide timezone. The scan's "today" must agree across the report
+# filename, the workflow guard, and every API-window cutoff -- otherwise a
+# scan that fires near a UTC/PT date boundary asks USASpending for one
+# day's contracts and writes the file under a different date. Use
+# `today_pacific()` everywhere a lookback or filename needs "today".
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+def today_pacific() -> date:
+    """Project-wide 'today' in Pacific time -- single source of truth for
+    every lookback window and the report filename."""
+    return datetime.now(PACIFIC).date()
 
 
 @dataclass

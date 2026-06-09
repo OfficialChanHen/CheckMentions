@@ -13,7 +13,7 @@ to surface names that are not yet in the universe.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Dict, List, Optional
 
 from . import config, http
@@ -41,7 +41,7 @@ CONTRACT_TYPES = ["A", "B", "C", "D"]  # definitive contracts + IDV task orders
 
 
 def _window():
-    end = date.today()
+    end = config.today_pacific()
     start = end - timedelta(days=config.CONTRACT_LOOKBACK_DAYS)
     return start.isoformat(), end.isoformat()
 
@@ -199,7 +199,7 @@ def executive_order_mentions(company: config.Company) -> Dict:
     move the valuation before the news cycle fully prices it in. Uses the free,
     no-key Federal Register API and returns a few sample EOs for the report.
     """
-    start = (date.today() - timedelta(days=config.EO_LOOKBACK_DAYS)).isoformat()
+    start = (config.today_pacific() - timedelta(days=config.EO_LOOKBACK_DAYS)).isoformat()
     # Use full_text instead of term: term ranks title matches heavily and lets
     # body-only mentions fall off the result set. The Jan 2026 NOC EO named
     # Northrop Grumman in the body only and was being missed.

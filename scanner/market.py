@@ -11,7 +11,7 @@ idea -- "is someone positioning ahead of news?" -- from freely available data:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Dict, Optional
 
 from . import config, http
@@ -54,10 +54,11 @@ def insider_sentiment_finnhub(ticker: str) -> float:
     key = config.env_key(config.KEY_FINNHUB)
     if not key:
         return 0.0
-    frm = (date.today() - timedelta(days=config.INSIDER_LOOKBACK_DAYS)).isoformat()
+    today = config.today_pacific()
+    frm = (today - timedelta(days=config.INSIDER_LOOKBACK_DAYS)).isoformat()
     data = http.get_json(
         FINNHUB_INSIDER_URL,
-        params={"symbol": ticker, "from": frm, "to": date.today().isoformat(), "token": key},
+        params={"symbol": ticker, "from": frm, "to": today.isoformat(), "token": key},
     )
     if not isinstance(data, dict):
         return 0.0
@@ -84,7 +85,7 @@ def options_activity_polygon(ticker: str) -> float:
     key = config.env_key(config.KEY_POLYGON)
     if not key:
         return 0.0
-    horizon = (date.today() + timedelta(days=120)).isoformat()
+    horizon = (config.today_pacific() + timedelta(days=120)).isoformat()
     data = http.get_json(
         POLYGON_OPTIONS_URL.format(ticker=ticker),
         params={
