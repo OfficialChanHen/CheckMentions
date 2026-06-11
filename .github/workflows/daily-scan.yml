@@ -10,7 +10,7 @@ name: Daily Trump-Shoutout Scan
 # entirely, the routine runs the scan itself in free-sources fallback mode.
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "17 5 * * *"
       timezone: "America/Los_Angeles"
   workflow_dispatch:        # manual runs anytime
 
